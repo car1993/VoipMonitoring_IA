@@ -1,32 +1,34 @@
-import os
-import datetime
-import pandas as pd
-import joblib
-import tkinter as tk
+import os # liberia para manejo de archivos y directorios
+import datetime # libreria para manejo de fechas
+import pandas as pd # libreria para manejo de datos en formato de tablas (dataframes)
+import joblib # libreria para guardar y cargar modelos de machine learning
+import tkinter as tk # libreria para crear interfaces graficas
+#librerias de interfas
 from tkinter import filedialog, messagebox
 from tkinter.scrolledtext import ScrolledText
 from sklearn.ensemble import IsolationForest
 
-# ═════════════════════════════════════════
-# CONFIGURACIÓN DE SENSIBILIDAD
-# ═════════════════════════════════════════
+# Configuración de umbrales y parámetros
+# porcentaces de variación para reportar anomalías en cada métrica
 UMBRAL_ASR = 70
 UMBRAL_ABR = 70
 UMBRAL_ACD = 200
-
+# pisos mínimos para evitar falsas alarmas en variaciones % de valores pequeños
 PISO_ASR = 20    # Promedio mínimo para reportar VARIACIÓN % de ASR
 PISO_ABR = 5     # Promedio mínimo para reportar VARIACIÓN % de ABR (caída a 0 siempre se reporta)
 PISO_ACD = 0.3   # Promedio mínimo para reportar VARIACIÓN % de ACD
-
+#valor minimo de intentos
 UMBRAL_INTENTOS_X    = 10
 UMBRAL_INTENTOS_CERO = 500
-
+#carpeta para guardar modelos de IA por area
 CARPETA_MODELOS = "modelos_voip"
 os.makedirs(CARPETA_MODELOS, exist_ok=True)
 
-# ═════════════════════════════════════════
-# HELPERS
-# ═════════════════════════════════════════
+
+
+#funcion para generar el nombre del modelo de IA basado en el nombre del area, 
+#reemplazando espacios por guiones bajos y eliminando caracteres no permitidos
+
 def nombre_modelo(area):
     return os.path.join(CARPETA_MODELOS, area.replace(" ", "_").replace(":", "") + ".pkl")
 
@@ -42,6 +44,7 @@ def parsear_fechas(serie):
             return pd.NaT
     return serie.apply(convertir)
 
+#funcion para limpiar y convertir una columna a números
 def limpiar_numero(serie):
     """
     Convierte una columna a número.
@@ -56,7 +59,7 @@ def limpiar_numero(serie):
         .pipe(pd.to_numeric, errors="coerce")
         .fillna(0)   # NaN (celda vacía en Excel) → 0
     )
-
+#funcion evaluar intentos: reporta si hay una caída a 0 con un histórico significativo, o una variación extrema vs el promedio histórico
 def evaluar_intentos(actual, promedio, dias):
     if actual == 0 and promedio >= UMBRAL_INTENTOS_CERO:
         return f"0 intentos registrados (promedio historico: {promedio:,.0f} en {dias} dias)"
@@ -69,6 +72,7 @@ def evaluar_intentos(actual, promedio, dias):
         return f"{direccion} de {diferencia:,.0f} intentos vs promedio {promedio:,.0f} ({dias} dias)"
     return None
 
+#funcion evaluar métrica: reporta anomalías en las métricas de calidad de servicio
 def evaluar_metrica(col, actual, historico):
     umbrales = {"ACD": UMBRAL_ACD, "ASR": UMBRAL_ASR, "ABR": UMBRAL_ABR}
     pisos    = {"ACD": PISO_ACD,   "ASR": PISO_ASR,   "ABR": PISO_ABR}
@@ -93,9 +97,7 @@ def evaluar_metrica(col, actual, historico):
         return f"{direccion} de {col}: {actual:.2f} vs promedio {promedio:.2f} ({variacion:.0f}%, {dias} dias)"
     return None
 
-# ═════════════════════════════════════════
-# FUNCIÓN PRINCIPAL
-# ═════════════════════════════════════════
+#funcion principal para leer el archivo Excel, procesar los datos, detectar anomalías y mostrar resultados en la interfaz gráfica
 def leer_archivo_excel():
 
     ruta_archivo = filedialog.askopenfilename(
@@ -106,7 +108,7 @@ def leer_archivo_excel():
         return
 
     try:
-        # ── LEER ────────────────────────────
+        #leer y limpiar datos
         df = pd.read_excel(ruta_archivo, header=1, keep_default_na=False)
         df.columns = ["area", "fecha", "intentos", "ACD", "ASR", "ABR"]
 
@@ -121,12 +123,12 @@ def leer_archivo_excel():
         df["fecha"] = parsear_fechas(df["fecha"].astype(str))
         df = df[df["fecha"].notna()]
 
-        # ── DETECTAR DÍA MÁS RECIENTE ───────
+        #detecta el último día registrado y lo separa del histórico para análisis comparativo
         fecha_hoy = df["fecha"].max().normalize()
         df_hoy  = df[df["fecha"].dt.normalize() == fecha_hoy]
         df_hist = df[df["fecha"].dt.normalize() <  fecha_hoy]
 
-        # ── INICIO REPORTE ───────────────────
+        #inicializa el cuadro de resultados en la interfaz gráfica
         cuadro_resultados.delete(1.0, tk.END)
         cuadro_resultados.insert(tk.END, "== ANALISIS DE DATOS VOIP ==\n\n")
         cuadro_resultados.insert(tk.END, f"Fecha analizada : {fecha_hoy.strftime('%b %d, %Y')}\n")
@@ -146,7 +148,7 @@ def leer_archivo_excel():
             if len(historico) < 2:
                 continue
 
-            # ── IA: cargar o crear modelo ────
+            #IA carga o entrena un modelo de Isolation Forest para detectar patrones inusuales en los datos históricos del área, y luego evalúa si el registro más reciente es una anomalía según el modelo y las reglas definidas para cada métrica
             ruta_modelo = nombre_modelo(area)
             if os.path.exists(ruta_modelo):
                 modelo_ia = joblib.load(ruta_modelo)
@@ -159,7 +161,7 @@ def leer_archivo_excel():
             prediccion  = modelo_ia.predict(ultimo[columnas_ia].values.reshape(1, -1))
             es_anomalia = prediccion[0] == -1
 
-            # ── EVALUAR MOTIVOS ──────────────
+            #aqui evalua motivos adicionales de anomalía basados en reglas específicas para cada métrica, como caídas a 0 o variaciones extremas vs el promedio histórico, y los agrega a la lista de motivos para reportar en el cuadro de resultados. Si el modelo de IA detecta un patrón inusual o si se cumplen las condiciones de las reglas, se marca el estado como "CRITICO" o "REVISAR" respectivamente, y se muestran los detalles en la interfaz gráfica.
             motivos = []
 
             msg = evaluar_intentos(ultimo["intentos"], historico["intentos"].mean(), len(historico))
@@ -198,9 +200,7 @@ def leer_archivo_excel():
         messagebox.showerror("Error", f"Ocurrio un error:\n\n{e}")
 
 
-# ═════════════════════════════════════════
-# INTERFAZ GRÁFICA
-# ═════════════════════════════════════════
+#interfaz
 ventana = tk.Tk()
 ventana.title("Analisis de Datos VoIP")
 ventana.geometry("1000x700")
